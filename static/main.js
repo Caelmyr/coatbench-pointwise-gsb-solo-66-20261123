@@ -1,7 +1,7 @@
 import {q,qa,icon,e,btn,link,badge,empty,option,img,field,textField,selectField,numField,checkField,areaField,api,request,date,n,percent,plot,stat,table} from "./widgets.js";
 import {resultCard,specimenResultRows} from "./results.js";
 
-const state={page:"collection",tile:null,tiles:[],tab:"captures",tool:"color",capture:null,viewer:"raw",layer:"overlay",result:null,config:null,results:[],refs:[],packets:[],study:null,studies:[],query:""};
+const state={page:"collection",tile:null,tiles:[],tab:"captures",tool:"color",capture:null,viewer:"raw",layer:"overlay",result:null,config:null,results:[],refs:[],packets:[],study:null,studies:[],query:"",cards:[]};
 const dialog=q("#dialog");
 const nav=[
   ["collection","Specimens","tiles"],
@@ -10,7 +10,7 @@ const nav=[
   ["received","Received evidence","archive"],
 ];
 const tabs=[
-  ["captures","Captures","camera"],["regions","Sampling regions","frame"],["measure","Measure","measure"],["geometry","Geometry","frame"],["evidence","Evidence","archive"],
+  ["captures","Captures","camera"],["regions","Sampling regions","frame"],["cards","Step cards","compare"],["measure","Measure","measure"],["geometry","Geometry","frame"],["evidence","Evidence","archive"],
 ];
 const tileUrl=()=>`/api/specimens/${state.tile.id}`;
 const tileData=extra=>({version:state.tile.version,...extra});
@@ -148,6 +148,7 @@ function measureControls() {
     ${selectField(tool.capture_pair?"First photo":"Photo source","photo_id",match(0))}
     ${tool.capture_pair?selectField("Paired photo","comparison_id",match(1)):checkField("Apply saved neutral balance","apply_neutral",true)}
     ${selectField("Region","region_id",regions())}
+    ${state.tool==="reference"?selectField("Step card (optional)","reference_card_id",option("","No step card","")+state.cards.map(record=>option(record.id,record.label+" · "+record.kind_label+" · "+record.captured_count+"/"+record.step_count+" photographed","")).join("")):""}
     <div class="form-columns">${Object.entries(tool.fields).map(([key,item])=>optionInput(key,item)).join("")}</div>
     ${["profile","marking","joint","scribe"].includes(state.tool)?btn("Mark line on image","mark-profile","secondary","measure"):""}
     <button class="button primary" type="submit">${icon("measure")}Run measurement</button>
@@ -215,7 +216,7 @@ function tilePage() {
   <p>${e(descriptors.join(" · ") || "Registered core section")}</p></div><div class="actions">${btn("Edit specimen","tile-edit","secondary","edit")}
   ${btn("Approve reference","reference-add","secondary","book")}</div></header>
   <nav class="tabs" aria-label="Specimen tools">${tabs.map(([key,label,glyph])=>`<button type="button" class="tab ${state.tab===key?"active":""}" data-do="tile-tab" data-value="${key}">${icon(glyph)}${e(label)}</button>`).join("")}</nav>
-  ${{captures,regions:regionPage,measure:measurements,geometry:geometryPage,evidence:evidencePage}[state.tab]()}`;
+  ${{captures,regions:regionPage,cards:cardsPage,measure:measurements,geometry:geometryPage,evidence:evidencePage}[state.tab]()}`;
 }
 
 function libraryPage() {
@@ -250,8 +251,8 @@ function render() {
 
 async function gatherTile(token=travel) {
   const url=tileUrl();
-  const [results,packets,activity,refs,metrology]=await Promise.all([
-    api(url+"/results"),api(url+"/evidence"),api(url+"/activity"),api("/api/library"),api(url+"/metrology"),
+  const [results,packets,activity,refs,metrology,cards]=await Promise.all([
+    api(url+"/results"),api(url+"/evidence"),api(url+"/activity"),api("/api/library"),api(url+"/metrology"),api(url+"/cards"),
   ]);
   if (token!==travel) return;
   state.results=results.items;
@@ -259,6 +260,7 @@ async function gatherTile(token=travel) {
   state.activity=activity.items;
   state.metrology=metrology.items;
   state.refs=refs.items;
+  state.cards=cards.items;
 }
 
 async function route() {
@@ -479,16 +481,110 @@ function neutralForm() {
     "Save balance",async data=>patchTile("/calibration","PUT",parseDatesAndNumbers(data,["target"]),"Neutral-card balance saved."));
 }
 
+function cardsPage() {
+  const tile=state.tile;
+  const rows=state.cards.map(card=>{
+    const captured=card.levels.filter(level=>level.captured);
+    const chips=captured.map(level=>`<span class="badge ${level.vertices?"ready":"caution"}">${level.number}${level.vertices?"":" · no patch"}</span>`).join(" ");
+    const missing=card.levels.filter(level=>!level.captured).map(level=>level.number);
+    return `<div class="row"><div class="grow"><strong class="row-title">${e(card.label)}</strong>
+      <small>${e(card.kind_label)} · ${card.levels.length} steps · ${card.captured_count} photographed${missing.length?` · not photographed: ${missing.join(", ")}`:""}</small>
+      <div class="actions" style="margin-top:6px">${chips}</div></div>
+      ${btn("Edit","card-edit","tiny secondary",null,`data-id="${card.id}"`)}${btn("Remove","card-remove","tiny ghost",null,`data-id="${card.id}"`)}</div>`;
+  }).join("");
+  return `<div class="grid-detail"><section class="card"><div class="title-row"><h3>Step cards</h3>${btn("Add step card","card-add","primary","plus")}</div>
+    <p class="soft">One dark and one light card may sit beside the panel, but the batch keeps one card family. Mark which steps were photographed clearly and draw each readable step's patch.</p>
+    ${rows?`<div class="divider-list">${rows}</div>`:"<p class='soft'>No step cards yet. Add the card that was in frame when this specimen was approved.</p>"}</section>
+    <section class="card"><h3>How the bracket is read</h3>
+    <p class="soft">The approval keeps the step values it actually photographed. A repeat capture is compared only when both the approved panel and the repeat panel fall inside the same two adjacent, clearly photographed steps. A step from the other card, or a step that was not photographed, never fills a gap.</p></section></div>`;
+}
+
+function cardForm(card) {
+  const base=state.tile.photos.find(item=>item.registration_state==="base");
+  if (!base) throw Error("Set a base capture before marking step-card patches.");
+  const levels=card?card.levels.map(level=>({...level})):[{number:1,nominal:0.06,captured:true,vertices:null}];
+  let editing=null;
+  const kindOptions=Object.entries(state.config.step_kinds).map(([key,label])=>option(key,label,card?.kind||"dark")).join("");
+  const rowMarkup=()=>levels.map((level,index)=>`<div class="row"><div class="grow">
+    <div class="form-columns">
+      <label class="field"><span>Step number</span><input type="number" min="1" max="999" step="1" value="${level.number}" data-card-field="number" data-index="${index}"></label>
+      <label class="field"><span>Nominal reading</span><input type="number" step="0.001" value="${level.nominal}" data-card-field="nominal" data-index="${index}"></label>
+    </div>
+    <small>${level.vertices?"patch marked":"no patch yet"}${level.captured?"":" · not photographed"}</small></div>
+    <label class="field check"><input type="checkbox" data-card-captured="${index}"${level.captured?" checked":""}> photographed</label>
+    ${btn(level.vertices?"Redraw patch":"Mark patch","card-patch","tiny secondary",null,`data-index="${index}"`)}</div>`).join("");
+  const readFields=()=>{
+    dialog.querySelectorAll("[data-card-field]").forEach(input=>{
+      const index=Number(input.dataset.index);
+      levels[index][input.dataset.cardField]=input.dataset.cardField==="number"?Number(input.value):Number(input.value);
+    });
+    dialog.querySelectorAll("[data-card-captured]").forEach(box=>{
+      levels[Number(box.dataset.cardCaptured)].captured=box.checked;
+    });
+  };
+  modal(card?"Edit step card":"Add step card",`
+    <div class="form-columns">${textField("Card label","label",card?.label||"Dark step card",'required maxlength="80"')}
+      ${selectField("Card family","kind",kindOptions)}</div>
+    <p class="notice">Enter the printed step number and its nominal reading. Tick each step that is clearly visible in the capture. A batch keeps one family only.</p>
+    <div id="card-levels" class="divider-list">${rowMarkup()}</div>
+    <div class="actions">${btn("Add step","card-step-add","tiny secondary","plus")}</div>
+    ${areaField("Notes","notes",card?.notes||"",600)}
+    <div id="card-patch-target"></div>`,
+    card?"Save step card":"Save step card",async data=>{
+      readFields();
+      const payload={label:data.get("label"),kind:data.get("kind"),notes:data.get("notes"),levels:levels.map(level=>({
+        number:level.number,nominal:level.nominal,captured:level.captured,vertices:level.vertices,
+      }))};
+      await api(tileUrl()+"/cards"+(card?"/"+card.id:""),{method:card?"PUT":"POST",body:payload});
+      await gatherTile();
+      commitModal();
+      toast("Step card saved.");
+      render();
+    },true);
+  const rerender=()=>{readFields();q("#card-levels").innerHTML=rowMarkup();};
+  dialog.querySelector("#card-levels").addEventListener("click",event=>{
+    const button=event.target.closest("[data-do]");
+    if (!button) return;
+    if (button.dataset.do==="card-patch") {
+      readFields();
+      editing=Number(button.dataset.index);
+      prepareDrawing(levels[editing].vertices||[],40);
+      const target=q("#card-patch-target");
+      target.innerHTML=`<p class="notice">Click around step ${levels[editing].number}'s patch on the capture. Save the card when done.</p>
+        ${drawing(base.registered_url,"Step patch drawing")}
+        <div class="actions">${btn("Use patch","card-patch-apply","tiny primary")}<span class="soft" id="draw-count"></span></div>`;
+      drawUpdate();
+      q("[data-do='card-patch-apply']",target).addEventListener("click",()=>{
+        if (drawPoints.length<3) throw Error("Mark at least three points for the patch.");
+        levels[editing].vertices=drawPoints.map(point=>[...point]);
+        rerender();
+        q("#card-patch-target").innerHTML="";
+      },{once:true});
+    }
+  });
+  dialog.querySelector("[data-do='card-step-add']").addEventListener("click",event=>{
+    event.preventDefault();
+    readFields();
+    const last=levels[levels.length-1];
+    levels.push({number:(last?last.number:0)+1,nominal:last?Number((last.nominal+0.06).toFixed(3)):0.06,captured:true,vertices:null});
+    rerender();
+  });
+}
+
 function refForm() {
   if (!state.tile.plane) throw Error("Add a specimen photo before approving a reference.");
   modal("Approve visual reference",`${textField("Reference name","title",state.tile.name,'required maxlength="100"')}
     ${textField("Reference series","family",state.tile.glaze,'maxlength="100"')}${selectField("Region","region_id",regions())}
-    ${areaField("Notes","notes","",1200)}<p class="notice">The selected image and measured color remain attached to the reference if the specimen later changes.</p>`,
+    ${selectField("Step card","card_id",option("","No step card (single photo only)","")+state.cards.map(card=>option(card.id,card.label+" · "+card.kind_label+" · "+card.captured_count+"/"+card.step_count+" photographed")).join(""))}
+    ${areaField("Notes","notes","",1200)}<p class="notice">The approved color sample and the step values photographed beside it stay frozen. A tray keeps one card family; the dark and light step sets are never exchanged. Without a card the reference still opens, but no step-bracket comparison is claimed.</p>`,
     "Approve reference",async data=>{
-      await api("/api/library",{method:"POST",body:{...plainData(data),tile_id:state.tile.id}});
+      const payload={...plainData(data),tile_id:state.tile.id};
+      if (!payload.card_id) delete payload.card_id;
+      await api("/api/library",{method:"POST",body:payload});
       await gatherTile();
       commitModal();
       toast("Visual reference approved.");
+      render();
     });
 }
 
@@ -635,10 +731,13 @@ function parsedOptions(data,tool) {
 
 async function runMeasurement(data) {
   const revision=travel;
+  const cardId=data.get("reference_card_id")||null;
+  const options=parsedOptions(data,state.config.tools[state.tool]);
+  if (state.tool==="reference") options.card_id=cardId;
   const result=await api(tileUrl()+"/results",{method:"POST",body:{
     kind:state.tool,photo_id:data.get("photo_id")||null,comparison_id:data.get("comparison_id")||null,
     region_id:data.get("region_id")||null,apply_neutral:data.has("apply_neutral"),
-    options:parsedOptions(data,state.config.tools[state.tool]),
+    options,
   }});
   if (revision!==travel) return;
   state.result=result;
@@ -700,6 +799,18 @@ async function doAction(name,target) {
     neutral:neutralForm,
     "neutral-clear":()=>patchTile("/calibration","DELETE",{},"Neutral-card balance cleared."),
     "reference-add":refForm,
+    "card-add":()=>cardForm(),
+    "card-edit":()=>cardForm(state.cards.find(item=>item.id===id)),
+    "card-remove":()=>{
+      const card=state.cards.find(item=>item.id===id);
+      modal("Remove step card?",'<p>Approved references keep the step values they were approved with.</p>',"Remove card",async ()=>{
+        await api(tileUrl()+"/cards/"+id,{method:"DELETE",body:tileData({"version":card.version})});
+        await gatherTile();
+        commitModal();
+        toast("Step card removed.");
+        render();
+      });
+    },
     "reference-retire":()=>{
       const ref=state.refs.find(item=>item.id===id);
       modal("Retire visual reference?",'<p>Earlier measurements keep the approved sample they used.</p>',"Retire reference",async ()=>{

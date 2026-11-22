@@ -21,7 +21,13 @@ export function metricSet(record) {
     craze: () => [["Trace length",`${n(m.network_length)} ${m.length_unit}`],["Junctions",n(m.junctions,0)],["Closed cells",n(m.closed_cell_count,0)]],
     rim: () => [["Rim median ΔE",n(m.all_edges.median_from_center_delta_e)],["Rim pixels",n(m.all_edges.pixels,0)],["Interior L*",n(m.interior.median_lab[0])]],
     profile: () => [["Distance",`${n(m.line_length)} ${m.distance_unit}`],["Valid stations",`${m.supported_stations}/${m.requested_stations}`],["Median L*",n(m.features.median_lightness)]],
-    reference: () => [["Specimen to reference ΔE",n(m.delta_e76)],["Lightness difference",n(m.delta_lab[0])],["Dispersion difference",n(m.dispersion_delta)]],
+    reference: () => {
+      const s = m.steps;
+      const shared = [["Specimen to reference ΔE", n(m.delta_e76)],["Lightness difference", n(m.delta_lab[0])]];
+      return s
+        ? [...shared, ["Legal step pair", s.legal ? `${s.bracket.lower}–${s.bracket.upper}` : "none"], ["Step-fraction shift", s.fraction_shift == null ? "—" : n(s.fraction_shift, 3)]]
+        : [...shared, ["Dispersion difference", n(m.dispersion_delta)]];
+    },
     marking: () => [["Measured stations",percent(m.observed_percent)],["Rule among measured",percent(m.midrib_percent_of_observed)],["Runs",m.runs.length]],
     joint: () => [["Measured stations",m.measured_stations],["Unmeasured stations",m.unmeasured_stations],["Median absolute contrast",n(m.median_absolute_step,4)]],
     scribe: () => [["Median exposure width",m.median_width==null?"—":`${n(m.median_width,3)} ${m.length_unit}`],["Maximum exposure width",m.maximum_width==null?"—":`${n(m.maximum_width,3)} ${m.length_unit}`],["Both sides measured",`${m.observed_stations}/${m.requested_stations}`]],
@@ -128,10 +134,19 @@ function rimDetail(m) {
   ${table(["Side","Pixels","Median from interior ΔE","Excluded"],m.sides.map(item=>[item.side,item.stats?.pixels,n(item.stats?.median_from_center_delta_e),percent(item.excluded_percent)]))}`;
 }
 
-function referenceDetail(m) {
+function referenceDetail(record) {
+  const m=record.metrics;
+  const s=m.steps;
+  const stepTable=s?`<h3>Step-card bracket · ${e(s.card_label)}</h3>
+    <p class="${s.legal?"notice":"notice warn"}">${e(s.summary)}</p>
+    <div class="metrics">${stat("Approved panel",s.approval_panel_swatch)}${stat("Repeat panel",s.repeat_panel_swatch)}${stat("Legal step pair",s.legal?`${s.bracket.lower}–${s.bracket.upper}`:"—")}${stat("Step-fraction shift",s.fraction_shift==null?"—":n(s.fraction_shift,3))}</div>
+    ${table(["Step","Nominal","L* now","Readable now","Patch"],s.current_steps.map(item=>[item.number,n(item.nominal,4),n(item.lightness,2),item.readable?"yes":"no",item.readable?item.swatch:item.reason||"—"]))}
+    <p class="soft">Approved span: ${e(s.approved_span.note)} Current capture: ${e(s.current_span.note)}</p>
+    ${s.pending_steps.length?`<p class="notice warn">Steps still to photograph: ${s.pending_steps.join(", ")}</p>`:""}
+    ${s.basis_note?`<p class="soft">${e(s.basis_note)}</p>`:""}`:"";
   return `<h3>${e(m.reference_title)}</h3>
     <div class="metrics">${stat("Specimen",m.specimen.swatch)}${stat("Approved reference",m.reference.swatch)}</div>
-    <p class="notice">${e(m.capture_note)}</p>`;
+    <p class="notice">${e(m.capture_note)}</p>${stepTable}`;
 }
 
 function details(record) {
@@ -146,7 +161,7 @@ function details(record) {
     direction:directionDetail,texture:textureDetail,profile:profileDetail,reference:referenceDetail,craze:crazeDetail,rim:rimDetail,
     marking:markingDetail,joint:jointDetail,aggregate:aggregateDetail,scribe:scribeDetail,
   }[record.kind];
-  return render(record.kind==="defects" ? record : record.metrics);
+  return render(record.kind==="defects"||record.kind==="reference" ? record : record.metrics);
 }
 
 export function resultCard(record, layer, currentRevision) {

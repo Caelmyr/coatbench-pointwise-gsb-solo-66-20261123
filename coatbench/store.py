@@ -6,7 +6,7 @@ import sqlite3
 from pathlib import Path
 from uuid import uuid4
 
-from .model import ConflictError, MissingError, digest_identity, identity, timestamp
+from .model import ConflictError, InputError, MissingError, digest_identity, identity, timestamp
 
 
 SCHEMA = """
@@ -32,6 +32,13 @@ CREATE TABLE IF NOT EXISTS library (
     updated_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS library_source ON library(tile_id);
+CREATE TABLE IF NOT EXISTS cards (
+    id TEXT PRIMARY KEY,
+    tile_id TEXT NOT NULL REFERENCES specimens(id),
+    document TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS cards_source ON cards(tile_id);
 CREATE TABLE IF NOT EXISTS evidence (
     id TEXT PRIMARY KEY,
     tile_id TEXT NOT NULL REFERENCES specimens(id),
@@ -345,6 +352,66 @@ class Store:
             )
             event(conn, ref["tile_id"], "reference", f"Approved visual reference: {ref['title']}")
         return ref
+
+    def _card(self, conn, identifier):
+        chosen = identity(identifier, "Step card ID")
+        row = conn.execute("SELECT document FROM cards WHERE id=?", (chosen,)).fetchone()
+        return artifact_row(row, "Step card")
+
+    def card(self, identifier):
+        with self.connect() as conn:
+            return self._card(conn, identifier)
+
+    def cards(self, tile_id):
+        source = identity(tile_id, "Specimen ID")
+        with self.connect() as conn:
+            self._tile(conn, source)
+            rows = conn.execute(
+                "SELECT document FROM cards WHERE tile_id=? ORDER BY rowid ASC", (source,),
+            ).fetchall()
+        return [json.loads(row["document"]) for row in rows]
+
+    def save_card(self, tile_id, fields, existing=None):
+        now = timestamp()
+        with self.transaction(write=True) as conn:
+            self._tile(conn, tile_id)
+            if existing is not None:
+                record = self._card(conn, existing["id"])
+                self.require_version(record, existing["version"])
+                record.update(fields)
+                record["version"] += 1
+                record["updated_at"] = now
+                conn.execute(
+                    "UPDATE cards SET document=?,updated_at=? WHERE id=?",
+                    (document(record), now, record["id"]),
+                )
+                event(conn, tile_id, "card", f"Updated step card: {record['label']}")
+                return record
+            count = conn.execute("SELECT COUNT(*) FROM cards WHERE tile_id=?", (tile_id,)).fetchone()[0]
+            if count >= 4:
+                raise InputError("A specimen holds at most four step cards.")
+            record = {
+                **fields,
+                "id": make_id(),
+                "tile_id": tile_id,
+                "version": 1,
+                "created_at": now,
+                "updated_at": now,
+            }
+            conn.execute(
+                "INSERT INTO cards(id,tile_id,document,updated_at) VALUES (?,?,?,?)",
+                (record["id"], tile_id, document(record), now),
+            )
+            event(conn, tile_id, "card", f"Added step card: {record['label']}")
+            return record
+
+    def remove_card(self, tile_id, identifier, expected_version):
+        with self.transaction(write=True) as conn:
+            record = self._card(conn, identifier)
+            self.require_version(record, expected_version)
+            conn.execute("DELETE FROM cards WHERE id=?", (record["id"],))
+            event(conn, tile_id, "card", f"Removed step card: {record['label']}")
+            return record
 
     def retire_reference(self, identifier, expected_version):
         with self.transaction(write=True) as conn:

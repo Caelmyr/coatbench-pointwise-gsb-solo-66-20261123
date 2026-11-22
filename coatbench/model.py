@@ -38,6 +38,12 @@ REGION_PURPOSES = {
     "neutral": "Neutral color card",
     "ignore": "Exclude from measurement",
 }
+STEP_KINDS = {
+    "dark": "Dark step card",
+    "light": "Light step card",
+}
+MAX_STEP_CARDS = 4
+MAX_CARD_STEPS = 26
 ANALYSIS_LABELS = {
     "pores": "Pinhole candidates",
     "dots": "Dark particle census",
@@ -189,6 +195,71 @@ def library_fields(payload):
         "family": string(data.get("family"), "Reference series", maximum=100, required=False),
         "notes": string(data.get("notes"), "Reference notes", maximum=1200, required=False),
         "region_id": identity(data["region_id"], "Region ID") if data.get("region_id") else None,
+        "card_id": identity(data.get("card_id"), "Step card ID") if data.get("card_id") else None,
+    }
+
+
+def step_levels(value, label):
+    levels = collection(value, label, minimum=2, maximum=MAX_CARD_STEPS)
+    parsed = []
+    for item in levels:
+        entry = dictionary(item, label)
+        number = integer(entry.get("number"), f"{label} number", lower=1, upper=999)
+        reading = scalar(entry.get("nominal"), f"{label} nominal", lower=-100000, upper=100000)
+        captured = entry.get("captured", True)
+        if type(captured) is not bool:
+            raise InputError(f"{label} captured flag must be true or false.")
+        vertices = entry.get("vertices")
+        parsed.append({
+            "number": number,
+            "nominal": reading,
+            "captured": captured,
+            "vertices": [numeric_pair(point, f"{label} patch", lower=0, upper=1) for point in collection(vertices, f"{label} patch", minimum=3, maximum=40)] if vertices else None,
+        })
+    if len({item["number"] for item in parsed}) != len(parsed):
+        raise InputError(f"{label} repeats a step number.")
+    previous = None
+    for item in sorted(parsed, key=lambda entry: entry["number"]):
+        if previous is not None and item["nominal"] <= previous:
+            raise InputError(f"{label} nominal readings must increase with step number.")
+        previous = item["nominal"]
+    parsed.sort(key=lambda entry: entry["number"])
+    if not any(item["captured"] for item in parsed):
+        raise InputError(f"{label} needs at least one step that was photographed clearly.")
+    if not any(item["captured"] and item["vertices"] for item in parsed):
+        raise InputError(f"{label} needs a marked patch on at least one clearly photographed step.")
+    for item in parsed:
+        if item["vertices"] and abs(_polygon_area(item["vertices"])) < 0.00005:
+            raise InputError(f"{label} step {item['number']} patch is too small.")
+    return parsed
+
+
+def _polygon_area(vertices):
+    linked = list(vertices[1:]) + [vertices[0]]
+    return 0.5 * sum(
+        first[0] * second[1] - first[1] * second[0]
+        for first, second in zip(vertices, linked)
+    )
+
+
+def step_card_fields(payload, existing=None):
+    data = dictionary(payload, "Step card")
+    current = existing or {}
+    kind = enumeration(data.get("kind", current.get("kind")), STEP_KINDS, "Step card family")
+    levels = step_levels(
+        data["levels"] if "levels" in data else current.get("levels", []),
+        "Step card levels",
+    )
+    return {
+        "kind": kind,
+        "label": string(data.get("label", current.get("label")), "Step card label", maximum=80),
+        "levels": levels,
+        "notes": string(
+            data.get("notes", current.get("notes", "")),
+            "Step card notes",
+            maximum=600,
+            required=False,
+        ),
     }
 
 

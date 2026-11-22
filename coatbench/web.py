@@ -28,6 +28,7 @@ from .model import (
     MAX_UPLOAD,
     REGION_PURPOSES,
     ROLE_LABELS,
+    STEP_KINDS,
     ConflictError,
     InputError,
     MissingError,
@@ -56,9 +57,12 @@ from .workspace import (
     preview_transform,
     remove_photo,
     remove_region,
+    remove_step_card,
     save_plane,
     save_region,
     save_registration,
+    save_step_card,
+    step_card_summary,
     summarize_tile,
 )
 
@@ -232,6 +236,25 @@ def register_specimens(api, store, heavy):
     @api.delete("/specimens/<specimen_id>/calibration")
     def calibration_remove(specimen_id):
         return jsonify(present_tile(clear_calibration(store, specimen_id, json_request())))
+
+    @api.get("/specimens/<specimen_id>/cards")
+    def cards_show(specimen_id):
+        tiles = store.tile(specimen_id)
+        return jsonify({"items": [step_card_summary(item) for item in store.cards(tiles["id"])]})
+
+    @api.post("/specimens/<specimen_id>/cards")
+    def card_create(specimen_id):
+        record, status = save_step_card(store, specimen_id, json_request())
+        return jsonify(record), status
+
+    @api.put("/specimens/<specimen_id>/cards/<card_id>")
+    def card_change(specimen_id, card_id):
+        record, status = save_step_card(store, specimen_id, json_request(), card_id)
+        return jsonify(record), status
+
+    @api.delete("/specimens/<specimen_id>/cards/<card_id>")
+    def card_remove(specimen_id, card_id):
+        return jsonify(remove_step_card(store, specimen_id, card_id, json_request()))
 
 
 def register_measurements(api, store, heavy):
@@ -468,6 +491,7 @@ def create_app(data_dir=None):
         return jsonify({
             "photo_roles": ROLE_LABELS,
             "region_purposes": REGION_PURPOSES,
+            "step_kinds": STEP_KINDS,
             "analysis_labels": ANALYSIS_LABELS,
             "tools": TOOLS,
             "study_metrics": public_metrics(),

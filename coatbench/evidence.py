@@ -118,6 +118,18 @@ def result_metrics_table(record):
         fields = ("rank", "registered_pixels", "normalized_center", "contrast", "bounding_width", "bounding_height")
         columns = ("unit", *fields)
         rows = ([metrics["unit"], *(item[key] for key in fields)] for item in metrics["candidates"])
+    elif kind == "reference" and metrics.get("steps"):
+        steps = metrics["steps"]
+        columns = ("lower", "upper", "lower_nominal", "upper_nominal", "fraction_before", "fraction_now", "fraction_shift")
+        bracket = steps.get("bracket") or {}
+        return csv_lines(
+            ("comparison_id", "status", "legal", "card_kind", "card_label", *columns, "summary"),
+            [(
+                record["id"], steps["status"], steps["legal"], steps.get("card_kind", ""),
+                steps.get("card_label", ""),
+                *(bracket.get(key, "") for key in columns), steps.get("summary", ""),
+            )],
+        )
     else:
         columns = ("metric", "value")
         rows = [[key, val] for key, val in metrics.items() if not isinstance(val, (dict, list))]

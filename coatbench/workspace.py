@@ -12,8 +12,10 @@ from .model import (
     ConflictError,
     InputError,
     MAX_REGIONS,
+    MAX_STEP_CARDS,
     MAX_TILE_IMAGES,
     ROLE_LABELS,
+    STEP_KINDS,
     dictionary,
     enumeration,
     flag,
@@ -22,6 +24,7 @@ from .model import (
     model_version,
     region_fields,
     scalar,
+    step_card_fields,
     string,
     tile_fields,
 )
@@ -291,3 +294,51 @@ def clear_calibration(store, identifier, payload):
         tile["calibration"] = None
 
     return store.edit_tile(identifier, expected, change, "calibration", "Cleared neutral-card image gains")
+
+
+def present_card(store, card):
+    return {**card, "kind_label": STEP_KINDS[card["kind"]]}
+
+
+def save_step_card(store, identifier, payload, card_id=None):
+    tile = store.tile(identifier)
+    existing = store.card(card_id) if card_id is not None else None
+    if existing is not None and existing["tile_id"] != tile["id"]:
+        raise InputError("That step card belongs to a different specimen.")
+    fields = step_card_fields(payload, existing)
+    others = [item for item in store.cards(tile["id"]) if existing is None or item["id"] != existing["id"]]
+    if any(item["kind"] == fields["kind"] for item in others):
+        raise InputError(
+            f"This specimen already has a {fields['kind']} step card. Keep one card per family."
+        )
+    if len(others) >= MAX_STEP_CARDS:
+        raise InputError(f"A specimen holds at most {MAX_STEP_CARDS} step cards.")
+    record = store.save_card(tile["id"], fields, existing)
+    if card_id is None:
+        return present_card(store, record), 201
+    return present_card(store, record), 200
+
+
+def remove_step_card(store, identifier, card_id, payload):
+    expected = model_version(payload)
+    record = store.card(card_id)
+    if record["tile_id"] != identity(identifier, "Specimen ID"):
+        raise InputError("That step card belongs to a different specimen.")
+    return present_card(store, store.remove_card(identifier, card_id, expected))
+
+
+def step_card_summary(card):
+    captured = [level for level in card["levels"] if level.get("captured", True)]
+    patched = [level for level in captured if level.get("vertices")]
+    return {
+        "id": card["id"],
+        "kind": card["kind"],
+        "kind_label": STEP_KINDS[card["kind"]],
+        "label": card["label"],
+        "notes": card.get("notes", ""),
+        "step_count": len(card["levels"]),
+        "captured_count": len(captured),
+        "patched_count": len(patched),
+        "version": card["version"],
+        "levels": card["levels"],
+    }

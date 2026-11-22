@@ -11,12 +11,18 @@ from .art import (
     stored_preview,
 )
 from .color import (
+    calibration_for,
     capture_basis,
     compare_reference,
     corrected_linear,
+    float_list,
+    lab_linear,
+    linear_lab,
+    matching_basis,
     reference_fingerprint,
     reference_map,
     summarize_colors,
+    swatch,
 )
 from .condition import aggregate_candidates, scan_marking, survey_joint
 from .coverage import measure_coverage
@@ -32,11 +38,12 @@ from .pores import measure_pores
 from .dots import measure_dots
 from .scribe import measure_scribe
 from .store import key_for
+from .steps import build_basis, compare_against_basis, overlay as step_overlay
 from .texture import measure_texture
 from .weave import measure_weave
 
 
-ANALYZER_VERSION = 2
+ANALYZER_VERSION = 3
 
 
 def selected_capture(tile, explicit, expected_role=None):
@@ -108,13 +115,13 @@ def support_digest(frame, area):
     }
 
 
-def reference_color_sample(store, tile, photo_id, chosen_region, apply_neutral):
+def reference_color_sample(store, tile, photo_id, chosen_region, apply_neutral, card=None):
     frame = specimen_frame(store.blobs, tile, photo_id)
     region = active_region(tile, chosen_region)
     domain = region_domain(frame.extent, tile, region)
     valid = analysis_mask(frame, domain, minimum=80, allow_clipped=False)
     linear, correction = corrected_linear(tile, frame, apply_neutral)
-    return {
+    sample = {
         "fingerprint": reference_fingerprint(linear, valid),
         "basis": capture_basis(tile, frame, correction),
         "region": region,
@@ -122,12 +129,57 @@ def reference_color_sample(store, tile, photo_id, chosen_region, apply_neutral):
         "specimen": specimen_provenance(tile),
         "annotated_digest": stored_preview(annotated_regions(frame, [region] if region else [], linear), store.blobs),
     }
+    if card is not None:
+        sample["step_basis"] = step_basis(tile, frame, linear, card, valid)
+    return sample
+
+
+def step_basis(tile, frame, linear, card, panel_mask):
+    """Sample one card family on the approval capture and keep its defensible span.
+
+    The steps and the panel are read from the same corrected pixels, so the
+    bracket and the approved color always share one basis.
+    """
+    basis = build_basis(frame, tile, linear, card)
+    panel = np.median(linear_lab(linear[panel_mask]), axis=0)
+    basis["approval_panel_lab"] = float_list(panel, 5)
+    basis["approval_panel_swatch"] = swatch(lab_linear(panel))
+    basis["approval_panel_from_same_capture"] = True
+    basis["approval_basis"] = capture_basis(tile, frame, calibration_for(tile, frame))
+    basis["tile_id"] = tile["id"]
+    return basis
+
+
+def assert_single_card_family(store, tile, card):
+    """A batch keeps one card family; the dark and light sets are never exchanged."""
+    family = card["kind"]
+    tiles_by_id = {item["id"]: item for item in store.list_tiles()}
+    batch = tile.get("batch")
+    for reference in store.references(include_retired=False):
+        basis = reference.get("step_basis")
+        if not basis:
+            continue
+        owner = tiles_by_id.get(reference["tile_id"])
+        if owner is None or (batch or None) != (owner.get("batch") or None):
+            continue
+        if basis.get("card_kind") and basis["card_kind"] != family:
+            raise InputError(
+                f"Tray {batch or '(unlabelled)'} already approved its step card as a"
+                f" {basis['card_kind']} card. Keep that one family and do not exchange the dark and"
+                " light step sets."
+            )
 
 
 def approve_reference(store, payload):
     fields = library_fields(payload)
     tile = store.tile(fields["tile_id"])
-    reference = reference_color_sample(store, tile, None, fields["region_id"], True)
+    card = None
+    if fields.get("card_id"):
+        card = store.card(fields["card_id"])
+        if card["tile_id"] != tile["id"]:
+            raise InputError("That step card belongs to a different specimen.")
+        assert_single_card_family(store, tile, card)
+    reference = reference_color_sample(store, tile, None, fields["region_id"], True, card)
     return store.add_reference({**fields, **reference})
 
 
@@ -231,8 +283,66 @@ def compute_single(store, tile, frame, region, area, linear, correction, params,
         metrics["reference_region"] = reference["region"]
         map_values = reference_map(linear, reference["fingerprint"])
         scale = formula_scale(map_values, support, 12)
-        return metrics, magnitude_overlay(frame, map_values, support, scale), theoretical_legend(kind, scale)
+        image = magnitude_overlay(frame, map_values, support, scale)
+        if reference.get("step_basis"):
+            basis = reference["step_basis"]
+            if basis.get("tile_id") != tile["id"]:
+                metrics["steps_note"] = (
+                    "The approved step-card basis belongs to another specimen; this comparison uses"
+                    " the color reference only."
+                )
+            else:
+                card_metrics, image = measure_step_reference(tile, frame, linear, support, reference, correction)
+                metrics["steps"] = card_metrics
+        return metrics, image, theoretical_legend(kind, scale)
     raise RuntimeError(f"Unsupported image measurement: {kind}.")
+
+
+def measure_step_reference(tile, frame, linear, support, reference, correction):
+    """Place the repeat panel on the same observed step pair the approval used."""
+    stored = reference["step_basis"]
+    previous_panel = np.asarray(stored["approval_panel_lab"], dtype=np.float32)
+    current_panel = np.asarray(np.median(linear_lab(linear[support]), axis=0), dtype=np.float32)
+    repeat_basis = capture_basis(tile, frame, correction)
+    approval_basis = stored.get("approval_basis") or {}
+    comparison = compare_against_basis(tile, frame, linear, stored, current_panel, previous_panel)
+    comparison.update({
+        "approval_panel_swatch": stored.get("approval_panel_swatch", "#000000"),
+        "repeat_panel_swatch": swatch(lab_linear(current_panel)),
+        "approval_basis": approval_basis,
+        "repeat_basis": repeat_basis,
+        "basis_note": matching_basis(approval_basis, repeat_basis) if approval_basis else None,
+        "summary": step_summary(comparison),
+    })
+    picture = step_overlay(frame, tile, stored, comparison, source=linear)
+    return comparison, picture
+
+
+def step_summary(comparison):
+    if comparison["legal"]:
+        return (
+            f"Legal comparison within approved steps {comparison['bracket']['lower']}–"
+            f"{comparison['bracket']['upper']}. The panel sits "
+            f"{comparison['fraction_shift']:+.3f} of the pair-step span from its approved position."
+        )
+    if comparison["status"] == "shifted":
+        return "Not comparable: the panel moved to a different step position than the approved capture."
+    if comparison["status"] == "boundary":
+        return (
+            "Not comparable: the panel sits on a step boundary in one capture and between steps in the"
+            " other. Re-shoot so it is clearly inside one adjacent pair on both occasions."
+        )
+    if comparison["status"] == "on-step":
+        return (
+            f"Both captures put the panel on step {comparison['anchor']['step']}. That is an on-step"
+            " match, not a reading held between two steps, so no lighter or darker move is claimed."
+        )
+    if comparison["status"] == "pending":
+        return (
+            "Still to photograph: the repeat capture does not hold the panel inside one adjacent"
+            " photographed pair. No color move is claimed."
+        )
+    return "This approved card basis cannot support a same-pair comparison."
 
 
 def compute_pair(tile, first, second, area, params):
