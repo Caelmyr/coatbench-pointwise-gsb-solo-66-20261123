@@ -46,6 +46,11 @@ from .photos import png_bytes
 from .review import parse_reviews, review_selection, save_reviews
 from .store import Store
 from .study import create_study, public_metrics
+from .tape import (
+    observation_locations,
+    save_tape_lift,
+    tape_overlay_image,
+)
 from .workspace import (
     calibrate,
     clear_calibration,
@@ -247,7 +252,12 @@ def register_measurements(api, store, heavy):
 
     @api.get("/results/<measurement_id>")
     def measurement_show(measurement_id):
-        return jsonify(store.result(measurement_id))
+        record = store.result(measurement_id)
+        if record["kind"] == "defects":
+            locations = observation_locations(store, record["tile_id"], measurement_id)
+            if locations is not None:
+                record["tape_locations"] = locations
+        return jsonify(record)
 
     @api.get("/results/<measurement_id>/image/<layer>")
     def measurement_image(measurement_id, layer):
@@ -275,7 +285,12 @@ def register_measurements(api, store, heavy):
     def defect_list(measurement_id):
         mode = enumeration(request.args.get("decision", "all"), ("all", "review", "confirm", "dismiss"), "Review filter")
         phrase = string(request.args.get("query"), "Observation filter", maximum=100, required=False)
-        return jsonify(review_selection(store.result(measurement_id), mode, phrase))
+        record = store.result(measurement_id)
+        selection = review_selection(record, mode, phrase)
+        locations = observation_locations(store, record["tile_id"], measurement_id)
+        if locations is not None:
+            selection["tape_locations"] = locations
+        return jsonify(selection)
 
     @api.patch("/results/<measurement_id>/observations")
     def defect_review_many(measurement_id):
@@ -425,6 +440,39 @@ def register_desks(api, store, heavy):
         record = store.metrology(entry_id)
         name = filename_stem(record["title"], "geometry")
         return binary_response(artifact_json(record), "application/json", name + ".json")
+
+    @api.get("/specimens/<specimen_id>/tape-lift")
+    def tape_lift_show(specimen_id):
+        record = store.tape_lift(specimen_id)
+        if record is None:
+            return jsonify({"items": [], "record": None})
+        return jsonify({"record": record})
+
+    @api.put("/specimens/<specimen_id>/tape-lift")
+    def tape_lift_save(specimen_id):
+        with heavy:
+            record = save_tape_lift(store, specimen_id, json_request())
+        return jsonify({"record": record})
+
+    @api.get("/results/<measurement_id>/tape-map")
+    def tape_map(measurement_id):
+        result = store.result(measurement_id)
+        locations = observation_locations(store, result["tile_id"], measurement_id)
+        if locations is None:
+            raise MissingError("No adopted tape-lift record is linked to this post-peel measurement.")
+        return jsonify(locations)
+
+    @api.get("/results/<measurement_id>/tape-map/overlay.png")
+    def tape_map_overlay(measurement_id):
+        result = store.result(measurement_id)
+        highlight = request.args.get("observation")
+        if highlight:
+            string(highlight, "Observation ID", maximum=8)
+        with heavy:
+            image = tape_overlay_image(store, result["tile_id"], measurement_id, highlight)
+        if image is None:
+            raise MissingError("No adopted tape-lift record is linked to this post-peel measurement.")
+        return image_response(image)
 
 
 def register_training(api, store, heavy):

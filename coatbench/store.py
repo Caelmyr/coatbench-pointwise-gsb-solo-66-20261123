@@ -65,6 +65,13 @@ CREATE TABLE IF NOT EXISTS metrology (
     created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS metrology_tile ON metrology(tile_id, created_at DESC);
+CREATE TABLE IF NOT EXISTS tape_lifts (
+    id TEXT PRIMARY KEY,
+    tile_id TEXT NOT NULL REFERENCES specimens(id),
+    document TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS tape_lifts_tile ON tape_lifts(tile_id);
 CREATE TABLE IF NOT EXISTS settings (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
@@ -474,3 +481,37 @@ class Store:
                 "SELECT document FROM metrology WHERE tile_id=? ORDER BY rowid DESC LIMIT 50", (chosen,),
             ).fetchall()
             return [json.loads(row["document"]) for row in rows]
+
+    def tape_lift(self, tile_id):
+        chosen = identity(tile_id, "Specimen ID")
+        with self.connect() as conn:
+            self._tile(conn, chosen)
+            row = conn.execute(
+                "SELECT document FROM tape_lifts WHERE tile_id=? ORDER BY rowid DESC LIMIT 1", (chosen,),
+            ).fetchone()
+            return json.loads(row["document"]) if row else None
+
+    def save_tape_lift(self, record):
+        now = timestamp()
+        with self.transaction(write=True) as conn:
+            existing = conn.execute(
+                "SELECT id, document FROM tape_lifts WHERE tile_id=? ORDER BY rowid DESC LIMIT 1",
+                (record["tile_id"],),
+            ).fetchone()
+            if existing is None:
+                record = {**record, "id": make_id(), "version": 1, "created_at": now, "updated_at": now}
+                conn.execute(
+                    "INSERT INTO tape_lifts(id,tile_id,document,updated_at) VALUES (?,?,?,?)",
+                    (record["id"], record["tile_id"], document(record), now),
+                )
+                event(conn, record["tile_id"], "tape", "Opened a tape-lift correspondence record")
+            else:
+                previous = json.loads(existing["document"])
+                record = {**record, "id": previous["id"], "version": previous["version"] + 1,
+                          "created_at": previous["created_at"], "updated_at": now}
+                conn.execute(
+                    "UPDATE tape_lifts SET document=?, updated_at=? WHERE id=?",
+                    (document(record), now, existing["id"]),
+                )
+                event(conn, record["tile_id"], "tape", "Updated tape-lift film correspondence")
+            return record

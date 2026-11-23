@@ -156,6 +156,14 @@ dialog::backdrop{background:#172a24b5}
 .draw-label{paint-order:stroke;stroke:#18291e;fill:#fff7d7;stroke-width:2px;vector-effect:non-scaling-stroke;font-size:30px}
 .stage-pair{display:grid;grid-template-columns:1fr 1fr;gap:8px}
 .stage-pair img{object-fit:contain;width:100%;max-height:55vh}
+.tape-held{color:#a05a2c;font-weight:700}
+.tape-ok{color:#375e43;font-weight:700}
+.tape-orientation{border-style:dashed;min-width:0}
+.tape-orientation legend{padding:0 6px;color:var(--jade)}
+.tape-jump{cursor:default}
+.tape-cross{stroke:#f68b60;stroke-width:4;vector-effect:non-scaling-stroke;pointer-events:none}
+.tape-cross-ring{fill:none;stroke:#fff7e8;stroke-width:3;vector-effect:non-scaling-stroke;pointer-events:none}
+.tape-jump svg{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;overflow:visible}
 #toast{position:fixed;bottom:19px;right:21px;max-width:min(440px,calc(100% - 42px));padding:10px 13px;border-radius:7px;color:#fffbe6;background:#263b30;box-shadow:var(--shadow);z-index:8}
 #toast:empty{display:none}#toast.error{background:#893f34}
 @media(max-width:1230px){body{grid-template-columns:205px minmax(0,1fr)}.rail{padding-left:14px;padding-right:14px}.hero-text{padding:35px}}

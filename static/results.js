@@ -82,13 +82,19 @@ function scribeDetail(m) {
     <details><summary>Station readings</summary>${table([`Distance (${unit})`,`Left (${unit})`,"Left evidence",`Right (${unit})`,"Right evidence",`Total (${unit})`],rows)}</details>`;
 }
 
-function defectsDetail(record) {
+export function defectsDetail(record, tapeMap) {
   const markers=record.metrics.observations;
   if (!markers.length) return "<p>No spots exceeded this run's current thresholds.</p>";
+  const tapeEntry = key => tapeMap?.entries.find(item=>item.observation_key===key);
   return `<h3>Review local observations</h3>
     <div class="divider-list scroll-list">${markers.map(marker=>{
       const decision=record.decisions[marker.key]?.decision || "review";
-      return `<div class="row"><div class="grow"><strong>${e(marker.key)} · ${e(marker.type)}</strong><br><small>${n(marker.area_pixels,0)} px · ${e(marker.polarity)} · ${e(decision)}</small></div>
+      const tape=tapeEntry(marker.key);
+      const held=tape && tape.state!=="confirmed";
+      return `<div class="row"><div class="grow"><strong>${e(marker.key)} · ${e(marker.type)}</strong><br>
+        <small>${n(marker.area_pixels,0)} px · ${e(marker.polarity)} · ${e(decision)}
+        ${tape?` · <span class="${held?"tape-held":"tape-ok"}">${held?"held for check":"tape confirmed"}</span>`:""}</small></div>
+        ${tape?btn("Tape","defect-tape-jump","tiny secondary","tape",`data-marker="${e(marker.key)}"`):""}
         ${btn("Confirm","defect-choice","tiny secondary",null,`data-marker="${e(marker.key)}" data-value="confirm"`)}
         ${btn("Dismiss","defect-choice","tiny ghost",null,`data-marker="${e(marker.key)}" data-value="dismiss"`)}
         ${btn("Note","defect-note","tiny ghost",null,`data-marker="${e(marker.key)}"`)}</div>`;
@@ -142,7 +148,8 @@ function details(record) {
     dots:m=>`<h3>Isolated dark grains</h3><p class="plot-note">${e(m.note)}</p>${table(["Grain","Area (px²)","Area (mm²)","Major/minor","Angle (°)"],m.rows.map(r=>[
       r.dot, n(r.area_px,0), n(r.area_mm2,5), n(r.axis_ratio,2), n(r.major_angle_deg,1)
     ]))}`,
-    color:colorDetail,coverage:coverageDetail,defects:defectsDetail,glare:glareDetail,
+    color:colorDetail,coverage:coverageDetail,
+    defects:m=>defectsDetail(m, m.tape_locations),glare:glareDetail,
     direction:directionDetail,texture:textureDetail,profile:profileDetail,reference:referenceDetail,craze:crazeDetail,rim:rimDetail,
     marking:markingDetail,joint:jointDetail,aggregate:aggregateDetail,scribe:scribeDetail,
   }[record.kind];

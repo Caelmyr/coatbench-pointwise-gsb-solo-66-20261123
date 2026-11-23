@@ -1,7 +1,8 @@
 import {q,qa,icon,e,btn,link,badge,empty,option,img,field,textField,selectField,numField,checkField,areaField,api,request,date,n,percent,plot,stat,table} from "./widgets.js";
 import {resultCard,specimenResultRows} from "./results.js";
+import {bindTape, loadTape, openWorkbench, tapeAction, tapeTab, jumpToTape} from "./tape.js";
 
-const state={page:"collection",tile:null,tiles:[],tab:"captures",tool:"color",capture:null,viewer:"raw",layer:"overlay",result:null,config:null,results:[],refs:[],packets:[],study:null,studies:[],query:""};
+const state={page:"collection",tile:null,tiles:[],tab:"captures",tool:"color",capture:null,viewer:"raw",layer:"overlay",result:null,config:null,results:[],refs:[],packets:[],study:null,studies:[],query:"",tapeRecord:null,tapeMap:null,tapeDraft:null};
 const dialog=q("#dialog");
 const nav=[
   ["collection","Specimens","tiles"],
@@ -10,7 +11,7 @@ const nav=[
   ["received","Received evidence","archive"],
 ];
 const tabs=[
-  ["captures","Captures","camera"],["regions","Sampling regions","frame"],["measure","Measure","measure"],["geometry","Geometry","frame"],["evidence","Evidence","archive"],
+  ["captures","Captures","camera"],["regions","Sampling regions","frame"],["measure","Measure","measure"],["tape","Tape lift","tape"],["geometry","Geometry","frame"],["evidence","Evidence","archive"],
 ];
 const tileUrl=()=>`/api/specimens/${state.tile.id}`;
 const tileData=extra=>({version:state.tile.version,...extra});
@@ -215,7 +216,7 @@ function tilePage() {
   <p>${e(descriptors.join(" · ") || "Registered core section")}</p></div><div class="actions">${btn("Edit specimen","tile-edit","secondary","edit")}
   ${btn("Approve reference","reference-add","secondary","book")}</div></header>
   <nav class="tabs" aria-label="Specimen tools">${tabs.map(([key,label,glyph])=>`<button type="button" class="tab ${state.tab===key?"active":""}" data-do="tile-tab" data-value="${key}">${icon(glyph)}${e(label)}</button>`).join("")}</nav>
-  ${{captures,regions:regionPage,measure:measurements,geometry:geometryPage,evidence:evidencePage}[state.tab]()}`;
+  ${{captures,regions:regionPage,measure:measurements,tape:()=>tapeTab(state),geometry:geometryPage,evidence:evidencePage}[state.tab]()}`;
 }
 
 function libraryPage() {
@@ -259,7 +260,16 @@ async function gatherTile(token=travel) {
   state.activity=activity.items;
   state.metrology=metrology.items;
   state.refs=refs.items;
+  state.tapeRecord=await loadTape(state.tile.id);
+  state.tapeMap=null;
+  if (state.tapeRecord?.peel_result_id) {
+    try {
+      state.tapeMap=await api(`/api/results/${state.tapeRecord.peel_result_id}/tape-map`);
+    } catch { state.tapeMap=null; }
+  }
 }
+
+state.rerender=()=>render();
 
 async function route() {
   const token=++travel;
@@ -720,13 +730,14 @@ async function doAction(name,target) {
       const record=state.result;
       const old=record.decisions[marker]||{};
       modal("Review "+marker, selectField("Disposition","decision",["review","confirm","dismiss"].map(item=>option(item,item,old.decision||"review")).join(""))+
-        areaField("Observation note","notes",old.notes,240),"Save observation",async data=>{
+        areaField("Observation note","notes",old.notes,240)+tapeJumpSection(marker),"Save observation",async data=>{
         state.result=await api(`/api/results/${record.id}/observations/${marker}`,{method:"PUT",body:{version:record.version,...plainData(data)}});
         commitModal();
         toast("Observation reviewed.");
         render();
       });
     },
+    "defect-tape-jump":()=>jumpToTape(state, marker),
     "result-open":async ()=>{
       state.result=await api("/api/results/"+id);
       state.layer="overlay";
@@ -744,6 +755,7 @@ async function doAction(name,target) {
     "study-open":()=>{state.study=state.studies.find(item=>item.id===id);render();},
     close:commitModal,
   };
+  if (tapeAction(name,target,state)) return;
   if (functions[name]) await functions[name]();
 }
 
@@ -822,5 +834,16 @@ document.addEventListener("change",event=>{
 dialog.addEventListener("close",()=>{
   qa("[data-blob]",dialog).forEach(el=>URL.revokeObjectURL(el.dataset.blob));
 });
+bindTape({dialog, modal});
+
+function tapeJumpSection(marker) {
+  const entry=state.tapeMap?.entries.find(item=>item.observation_key===marker);
+  if (!state.tapeRecord || !entry) return "";
+  const held=entry.state!=="confirmed";
+  return `<div class="field"><span>Tape correspondence</span>
+    <p class="soft">${held?"Held for check":"Confirmed"} under adopted orientation ${e(state.tapeMap.adopted_orientation)}.</p>
+    ${btn("Open tape original at this spot","defect-tape-jump","tiny secondary","tape",`data-marker="${e(marker)}"`)}</div>`;
+}
+
 window.addEventListener("hashchange",()=>{void route().catch(displayFault);});
 api("/api/configuration").then(config=>{state.config=config;return route();}).catch(displayFault);
